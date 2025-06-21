@@ -10,17 +10,17 @@ logging.getLogger("ultralytics").setLevel(logging.WARNING)
 logging.getLogger("torch").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-def videoRecorder(frame_read, keepRecording, tello, object_detection=False, save_frames=False, save_folder="recording"):
+def videoRecorder(frame_read, keepRecording, tello, save_frames=False, save_folder="recording"):
     frame_count = 0
-    if object_detection:
-        if torch.cuda.is_available():
-            model = YOLO("best.pt").cuda()
-        else:
-            model = YOLO("best.pt")
-        logger.info("Object detection enabled with YOLO11 trained model.")
-        last_direction = "-"
+    if torch.cuda.is_available():
+        model = YOLO("best.pt").cuda()
+    else:
+        model = YOLO("best.pt")
+    last_direction = "-"
     if save_frames:
         os.makedirs(save_folder, exist_ok=True)
+    else:
+        logger.info("save_frames is False, frames will not be saved.")
     last_keepalive = time.time()
     logger.info("Drone video recorder started. Press q to stop.")
     while keepRecording.is_set():
@@ -31,18 +31,15 @@ def videoRecorder(frame_read, keepRecording, tello, object_detection=False, save
                 cv2.imwrite(frame_path, frame)
                 logger.debug(f"Saved frame {frame_count} to {frame_path}")
                 frame_count += 1
-            if object_detection:
-                coord, display_frame = objectDetection(frame, model)
-                direction = getDirection(coord, frame.shape[1], frame.shape[0], last_direction)
-                if len(direction) > 1:
-                    try:
-                        tello.move(direction, 20)
-                    except Exception as e:
-                        logger.error(f"Error during tello.move('{direction}', 20): {e}")
-                        time.sleep(1)
-                last_direction = direction if coord is not None else "-"
-            else:
-                display_frame = frame
+            coord, display_frame = objectDetection(frame, model)
+            direction = getDirection(coord, frame.shape[1], frame.shape[0], last_direction)
+            if len(direction) > 1:
+                try:
+                    tello.move(direction, 20)
+                except Exception as e:
+                    logger.error(f"Error during tello.move('{direction}', 20): {e}")
+                    time.sleep(1)
+            last_direction = direction if coord is not None else "-"
             cv2.imshow("Tello Stream", display_frame)
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
@@ -75,7 +72,7 @@ def objectDetection(frame, model=None):
             y2 = int(y + h / 2)
             cv2.rectangle(frame_with_box, (x1, y1), (x2, y2), (0, 255, 0), 2)
             break  # Only the first shirt detected
-    logger.info(f"Yellow shirt detected: {coord}")
+    logger.debug(f"Yellow shirt detected: {coord}")
     return coord, frame_with_box
 
 def getDirection(coord, frame_width, frame_height, last_direction="-"):

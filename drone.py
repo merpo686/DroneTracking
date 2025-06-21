@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 def run():
     tello = Tello()
     tello.connect()
-    logger.info("Drone connected")
     logger.info("Drone battery: %s%%", tello.get_battery())
     tello.streamon()
     frame_read = tello.get_frame_read()
@@ -30,7 +29,6 @@ def run():
         "frame_read": frame_read,
         "keepRecording": keepRecording,
         "tello": tello,
-        "object_detection": True,
         "save_frames": False,
         "save_folder": "recording"
     })
