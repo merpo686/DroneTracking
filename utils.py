@@ -1,9 +1,19 @@
+import sys
 import time
 import cv2
 import os
 import logging
 from ultralytics import YOLO
 import torch
+import numpy as np
+
+sys.path.append(os.path.abspath("Depth-Anything-V2"))
+from metric_depth.depth_anything_v2.dpt import DepthAnythingV2
+
+FPS=30
+TARGET_DEPTH=2.5 # Distance idéal entre l'objet et le drone mètre
+MAX_SPEED=50
+MAX_SPEED_DEPTH=5 # A partir de 5 mètre, le drone se déplace à sa vitesse max sur l'axe z
 
 os.environ["YOLO_VERBOSE"] = "False"
 logging.getLogger("ultralytics").setLevel(logging.WARNING)
@@ -12,15 +22,18 @@ logger = logging.getLogger(__name__)
 
 def videoRecorder(frame_read, keepRecording, tello, save_frames=False, save_folder="recording"):
     frame_count = 0
-    if torch.cuda.is_available():
-        model = YOLO("best.pt").cuda()
-    else:
-        model = YOLO("best.pt")
-    last_direction = "-"
-    if save_frames:
-        os.makedirs(save_folder, exist_ok=True)
-    else:
-        logger.info("save_frames is False, frames will not be saved.")
+    device = torch.device(
+    "cuda" if torch.cuda.is_available() 
+    else "mps" if torch.backends.mps.is_available() 
+    else "cpu"
+    )
+
+    model_obj = YOLO("best.pt").to(device)
+    model_obj.eval()
+    model_depth = DepthAnythingV2(encoder='vits', features=64, out_channels=[48, 96, 192, 384]).to(device)
+    model_depth.load_state_dict(torch.load('depth_anything_v2_metric_hypersim_vits.pth', map_location='cpu'))
+    model_depth.eval()
+
     last_keepalive = time.time()
     logger.info("Drone video recorder started. Press q to stop.")
     while keepRecording.is_set():
@@ -31,15 +44,17 @@ def videoRecorder(frame_read, keepRecording, tello, save_frames=False, save_fold
                 cv2.imwrite(frame_path, frame)
                 logger.debug(f"Saved frame {frame_count} to {frame_path}")
                 frame_count += 1
-            coord, display_frame = objectDetection(frame, model)
-            direction = getDirection(coord, frame.shape[1], frame.shape[0], last_direction)
-            if len(direction) > 1:
-                try:
-                    tello.move(direction, 20)
-                except Exception as e:
-                    logger.error(f"Error during tello.move('{direction}', 20): {e}")
-                    time.sleep(1)
-            last_direction = direction if coord is not None else "-"
+            coord, display_frame = objectDetection(frame, model_obj)
+
+            if coord == None:
+                # tourne à droite avec une vitesse de 10
+                tello.send_rc_control(0, 0, 0, 10)
+            else:
+                depth = depthEstimation(frame, model_depth, device)
+                med_depth = objectDepth(coord, depth)
+                lf_speed, fb_speed, ud_speed, y_speed = computeSpeed(frame, med_depth, coord)
+                tello.send_rc_control(lf_speed, fb_speed, ud_speed, y_speed)
+
             cv2.imshow("Tello Stream", display_frame)
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
@@ -53,12 +68,12 @@ def videoRecorder(frame_read, keepRecording, tello, save_frames=False, save_fold
             tello.send_rc_control(0, 0, 0, 0)
             logger.debug("Sent keep-alive rc_control to drone.")
             last_keepalive = time.time()
-        time.sleep(1/4)
+        time.sleep(1/FPS)
 
-def objectDetection(frame, model=None):
+def objectDetection(frame, model_obj=None):
     coord = None
     frame_with_box = frame.copy()
-    results = model(frame)
+    results = model_obj(frame)
     boxes = results[0].boxes  # get boxes from the first result
 
     # Find the first box of class 0
@@ -113,3 +128,61 @@ def getDirection(coord, frame_width, frame_height, last_direction="-"):
 
     logger.info("Box centered and at ideal size, staying in place.")
     return "-"
+
+def depthEstimation(frame, model_depth=None, device=None):
+    # Charger l'image
+    raw_frame = cv2.imread(frame)
+    raw_frame = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2RGB)  # Convertir BGR → RGB
+
+    # Passage en Tensor
+    frame_tensor = model_depth.image2tensor(raw_frame, input_size=518)[0]
+    frame_tensor = frame_tensor.to(device)
+
+    # Inférence
+    with torch.no_grad():
+        depth = model_depth.forward(frame_tensor)
+    
+    depth = depth.squeeze().cpu().numpy()
+    # Redimensionner à la taille d'origine
+    depth = cv2.resize(depth, (raw_frame.shape[1], raw_frame.shape[0]))
+
+    return depth
+
+def objectDepth(coord, depth):
+    x, y, w, h = coord
+    x1 = int(x - w / 2)
+    y1 = int(y - h / 2)
+    x2 = int(x + w / 2)
+    y2 = int(y + h / 2)
+
+    mask = np.zeros(depth.shape, dtype=bool)
+
+    mask[y1:y2, x1:x2] = True
+
+    depth_masked = depth[mask]
+
+    # Filtrer les profondeurs valides (par exemple, > 0)
+    depth_valid = depth_masked[depth_masked > 0]
+
+    return np.median(depth_valid)
+
+def computeSpeed(frame, med_depth, coord):
+    frame_height, frame_width = frame.shape
+    x, y, w, h = coord
+
+    # vitesse pour la profondeur
+    fb_speed = (med_depth - TARGET_DEPTH) * (MAX_SPEED/TARGET_DEPTH)
+
+    if fb_speed < 0:
+        fb_speed = max(fb_speed, -MAX_SPEED)
+    else:
+        fb_speed = min(fb_speed, MAX_SPEED)
+
+    # vitesse de gauche à droite
+    lf_speed = ((x - w/2) / (w/2)) * MAX_SPEED
+
+    # vitesse de haut en bas
+    ud_speed = ((y - h/2) / (h/2)) * MAX_SPEED
+
+
+    return lf_speed, fb_speed, ud_speed, 0 # 0 pour la yaw speed
