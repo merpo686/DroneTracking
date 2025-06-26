@@ -7,7 +7,7 @@ from utils import videoRecorder
 # Prevent double logging
 for handler in logging.root.handlers[:]:
     logging.root.removeHandler(handler)
-logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(name)s:%(message)s")
 logging.getLogger("djitellopy").propagate = False
 logging.getLogger("djitellopy").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)

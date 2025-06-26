@@ -10,9 +10,9 @@ import numpy as np
 sys.path.append(os.path.abspath("Depth-Anything-V2"))
 from metric_depth.depth_anything_v2.dpt import DepthAnythingV2
 
-FPS=30
+FPS=10
 TARGET_DEPTH=2.5 # Distance idéal entre l'objet et le drone mètre
-MAX_SPEED=50
+MAX_SPEED=20
 MAX_SPEED_DEPTH=5 # A partir de 5 mètre, le drone se déplace à sa vitesse max sur l'axe z
 
 os.environ["YOLO_VERBOSE"] = "False"
@@ -29,7 +29,7 @@ def videoRecorder(frame_read, keepRecording, tello, save_frames=False, save_fold
     )
 
     model_obj = YOLO("best.pt").to(device)
-    model_obj.eval()
+    # model_obj.eval()
     model_depth = DepthAnythingV2(encoder='vits', features=64, out_channels=[48, 96, 192, 384]).to(device)
     model_depth.load_state_dict(torch.load('depth_anything_v2_metric_hypersim_vits.pth', map_location='cpu'))
     model_depth.eval()
@@ -46,15 +46,16 @@ def videoRecorder(frame_read, keepRecording, tello, save_frames=False, save_fold
                 frame_count += 1
             coord, display_frame = objectDetection(frame, model_obj)
 
-            if coord == None:
+            if coord is None:
                 # tourne à droite avec une vitesse de 10
                 tello.send_rc_control(0, 0, 0, 10)
+                logger.info(f"No shirt, rotating")
             else:
                 depth = depthEstimation(frame, model_depth, device)
                 med_depth = objectDepth(coord, depth)
                 lf_speed, fb_speed, ud_speed, y_speed = computeSpeed(frame, med_depth, coord)
                 tello.send_rc_control(lf_speed, fb_speed, ud_speed, y_speed)
-
+                logger.info(f"Centering shirt in the frame. Speeds : {lf_speed},{fb_speed},{ud_speed},{y_speed}")
             cv2.imshow("Tello Stream", display_frame)
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
@@ -131,8 +132,7 @@ def getDirection(coord, frame_width, frame_height, last_direction="-"):
 
 def depthEstimation(frame, model_depth=None, device=None):
     # Charger l'image
-    raw_frame = cv2.imread(frame)
-    raw_frame = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2RGB)  # Convertir BGR → RGB
+    raw_frame = frame
 
     # Passage en Tensor
     frame_tensor = model_depth.image2tensor(raw_frame, input_size=518)[0]
@@ -167,9 +167,9 @@ def objectDepth(coord, depth):
     return np.median(depth_valid)
 
 def computeSpeed(frame, med_depth, coord):
-    frame_height, frame_width = frame.shape
+    frame_height, frame_width,_ = frame.shape
     x, y, w, h = coord
-
+    print(med_depth)
     # vitesse pour la profondeur
     fb_speed = (med_depth - TARGET_DEPTH) * (MAX_SPEED/TARGET_DEPTH)
 
@@ -179,10 +179,10 @@ def computeSpeed(frame, med_depth, coord):
         fb_speed = min(fb_speed, MAX_SPEED)
 
     # vitesse de gauche à droite
-    lf_speed = ((x - w/2) / (w/2)) * MAX_SPEED
+    lf_speed = ((x - frame_width/2) / (frame_width/2)) * MAX_SPEED
 
     # vitesse de haut en bas
-    ud_speed = ((y - h/2) / (h/2)) * MAX_SPEED
+    ud_speed = ((y - frame_height/2) / (frame_height/2)) * MAX_SPEED
 
 
-    return lf_speed, fb_speed, ud_speed, 0 # 0 pour la yaw speed
+    return int(lf_speed), int(fb_speed), int(ud_speed), 0 # 0 pour la yaw speed
